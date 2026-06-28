@@ -58,7 +58,7 @@ class StepResult:
 
 class CrossyEnv:
     def __init__(self, character: str = "chicken", max_steps: int = 1500,
-                 wait_ticks: int = 8, settle_cap: int = 24, max_idle: int = 40,
+                 wait_ticks: int = 8, settle_cap: int = 24, max_idle: int = 150,
                  seed: Optional[int] = None):
         self.character = character
         self.max_steps = max_steps
@@ -112,29 +112,31 @@ class CrossyEnv:
         forward = self.max_z - prev_max
         alive = self.engine.hero.is_alive
 
-        reward = 0.05                                   # survival bonus
-        reward += forward * 1.0                         # forward progress
+        # Reward design (see docs/AI_AUDIT.md R2): a uniform NET-NEGATIVE time cost makes
+        # standing still strictly lose, so any forward progress dominates loitering — the
+        # old +0.05/step survival bonus rewarded waiting (it scaled with episode length).
+        # Forward progress is potential-based shaping on max_z (Δ of the furthest row), so
+        # the optimal policy is unchanged; the death penalty is ~one row, not a 5-row cliff.
+        reward = -0.01                                  # time cost: progress or perish
+        reward += forward * 1.0                         # forward progress (the only + term)
         if action == Action.DOWN:
             reward -= 0.3                               # discourage backtracking
-        elif action == Action.WAIT:
-            reward -= 0.02                              # mild idling cost
         elif action == Action.UP and forward == 0:
-            reward -= 0.05                              # bumped into an obstacle
+            reward -= 0.05                              # wasted hop into an obstacle/wall
 
         if forward > 0:
-            self.idle = 0
+            self.idle = 0                               # idle counts steps since a NEW max row
         else:
             self.idle += 1
 
         done = False
         if not alive:
-            reward -= 5.0
+            reward -= 1.0                               # death ≈ losing one row of progress
             done = True
         elif self.steps >= self.max_steps:
             done = True
         elif self.idle >= self.max_idle:
-            reward -= 1.0
-            done = True
+            done = True                                 # stuck too long; the time cost is penalty enough
 
         info = {"score": self.max_z, "steps": self.steps, "alive": alive,
                 "elapsed": self.elapsed}

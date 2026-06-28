@@ -206,13 +206,15 @@ class ActorCritic:
         onehot[np.arange(B), actions] = 1.0
         dlogits = coeff[:, None] * (onehot - probs)
 
-        # entropy bonus gradient (maximize entropy -> subtract from loss)
+        # entropy bonus gradient (maximize entropy -> subtract ent_coef*H from the loss)
         entropy = -np.sum(probs * np.log(probs + 1e-8), axis=1)
         ent = np.mean(entropy)
-        # d(entropy)/dlogits = -probs * (logp_all + entropy) ; we add -ent_coef*entropy to loss
         logits_logp = np.log(probs + 1e-8)
-        dent = -probs * (logits_logp + entropy[:, None])
-        dlogits += (-ent_coef) * (-dent) / B   # loss has -ent_coef*entropy
+        dent = -probs * (logits_logp + entropy[:, None])      # = +dH/dlogits (analytic)
+        # Loss term is -ent_coef*H, so its gradient is -ent_coef*dH/dlogits. The previous code
+        # used (-ent_coef)*(-dent) = +ent_coef*dent, which MINIMISED entropy (premature policy
+        # collapse). Correct sign keeps exploration alive. (see AI_AUDIT §3.7)
+        dlogits += (-ent_coef) * dent / B
 
         # value loss (MSE)
         value_err = value - returns
@@ -271,11 +273,119 @@ class QNetwork:
         out, cache = self.net.forward(obs)
         q_sa = out[np.arange(B), actions]
         err = q_sa - targets
+        # Huber (smooth-L1) gradient: clip the TD error to [-1, 1] so rare large targets don't
+        # blow up the update — important for value learning with a sparse-ish reward.
         dout = np.zeros_like(out)
-        dout[np.arange(B), actions] = 2.0 * err / B
+        dout[np.arange(B), actions] = np.clip(err, -1.0, 1.0) / B
         dW, db, _ = self.net.backward(dout, cache)
-        self.opt.step(self.net.W + self.net.b, dW + db)
+        grads = dW + db
+        total = np.sqrt(sum(float(np.sum(g * g)) for g in grads)) + 1e-8   # global-norm clip to 10
+        if total > 10.0:
+            grads = [g * (10.0 / total) for g in grads]
+        self.opt.step(self.net.W + self.net.b, grads)
         return float(np.mean(err ** 2))
 
     def copy_from(self, other: "QNetwork"):
         self.net.set_params(other.net.get_params())
+
+
+class DuelingQNetwork:
+    """Dueling state→action-value network (Wang et al. 2016).
+
+    A shared MLP trunk feeds two heads — a scalar **state value** V(s) and a per-action
+    **advantage** A(s,a) — recombined as ``Q = V + (A - mean_a A)``. Decoupling "how good is
+    this state" from "how much better is each action" learns state values more efficiently
+    when most actions are similar (true here: on a safe row every action is roughly fine).
+
+    ``update`` accepts per-sample importance-sampling ``weights`` (for prioritized replay) and
+    returns ``(loss, td_errors)`` so the buffer can re-prioritise. TD error uses a Huber
+    (clipped) gradient and global-norm clipping for stability.
+    """
+
+    def __init__(self, obs_size: int, num_actions: int, hidden=(128, 128),
+                 lr: float = 5e-4, grad_clip: float = 10.0, dueling: bool = True, seed: int = 0):
+        self.trunk = MLP([obs_size, *hidden], activation="relu", seed=seed)
+        rng = np.random.default_rng(seed + 7)
+        h = hidden[-1]
+        self.dueling = dueling
+        self.Wv = _he(rng, h, 1)
+        self.bv = np.zeros(1, dtype=np.float32)
+        self.Wa = _he(rng, h, num_actions)
+        self.ba = np.zeros(num_actions, dtype=np.float32)
+        self.num_actions = num_actions
+        self.grad_clip = grad_clip
+        self._params = self.trunk.W + self.trunk.b + [self.Wv, self.bv, self.Wa, self.ba]
+        self.opt = Adam(self._params, lr=lr)
+
+    def _features(self, obs):
+        feat, cache = self.trunk.forward(obs)
+        feat = _act(feat, "relu")            # trunk output through relu
+        return feat, cache
+
+    def q(self, obs):
+        feat, _ = self._features(obs)
+        a = feat @ self.Wa + self.ba
+        if not self.dueling:
+            return a                                 # plain Q head (advantage stream only)
+        v = feat @ self.Wv + self.bv
+        return v + (a - a.mean(axis=1, keepdims=True))
+
+    def act_argmax(self, obs):
+        return int(np.argmax(self.q(obs)[0]))
+
+    def update(self, obs, actions, targets, weights=None):
+        obs = np.asarray(obs, dtype=np.float32)
+        actions = np.asarray(actions, dtype=np.int64)
+        targets = np.asarray(targets, dtype=np.float32)
+        B = obs.shape[0]
+        w = np.ones(B, np.float32) if weights is None else np.asarray(weights, np.float32)
+
+        feat, cache = self._features(obs)
+        z_last = cache[-1][0]
+        a = feat @ self.Wa + self.ba
+        if self.dueling:
+            v = feat @ self.Wv + self.bv
+            q = v + (a - a.mean(axis=1, keepdims=True))
+        else:
+            q = a
+        q_sa = q[np.arange(B), actions]
+        td = q_sa - targets                                     # raw TD error (for PER)
+
+        # Huber gradient on the chosen action, scaled by IS weights.
+        g = np.clip(td, -1.0, 1.0) * w / B
+        dq = np.zeros_like(q)
+        dq[np.arange(B), actions] = g
+        # Backprop through Q = V + (A - mean_a A)  (or Q = A when not dueling):
+        if self.dueling:
+            dV = dq.sum(axis=1, keepdims=True)                  # dQ/dV = 1 per action
+            dA = dq - dq.mean(axis=1, keepdims=True)            # d(A-meanA)/dA_j = δ - 1/n
+        else:
+            dV = np.zeros((B, 1), np.float32)
+            dA = dq
+        dWv = feat.T @ dV
+        dbv = dV.sum(axis=0)
+        dWa = feat.T @ dA
+        dba = dA.sum(axis=0)
+        dfeat = dV @ self.Wv.T + dA @ self.Wa.T
+        dfeat = dfeat * _act_grad(feat, z_last, "relu")
+        dW, db, _ = self.trunk.backward(dfeat, cache)
+
+        grads = dW + db + [dWv, dbv, dWa, dba]
+        total = np.sqrt(sum(float(np.sum(gr * gr)) for gr in grads)) + 1e-8
+        if total > self.grad_clip:
+            grads = [gr * (self.grad_clip / total) for gr in grads]
+        self.opt.step(self._params, grads)
+        return float(np.mean((td ** 2) * w)), td
+
+    def get_params(self):
+        return [p.copy() for p in self._params]
+
+    def set_params(self, params):
+        for dst, src in zip(self._params, params):
+            dst[...] = src
+
+    def copy_from(self, other: "DuelingQNetwork"):
+        self.set_params(other.get_params())
+
+    def set_lr(self, lr: float) -> None:
+        self.opt.lr = lr

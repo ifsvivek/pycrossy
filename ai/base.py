@@ -35,6 +35,13 @@ class Algorithm(abc.ABC):
 
     name: str = "base"
 
+    # Planning agents (e.g. Minimax) need the live simulator, not just the obs vector, so the
+    # drivers call ``bind_env`` before running an episode. Learners leave this False / no-op.
+    uses_planning: bool = False
+
+    def bind_env(self, env) -> None:
+        """Give a planning agent access to the env it is about to act in (no-op for learners)."""
+
     def __init__(self, obs_size: int, num_actions: int, cfg: Dict | None = None,
                  seed: int = 0):
         self.obs_size = obs_size
@@ -92,6 +99,18 @@ class Algorithm(abc.ABC):
     def set_population_fitness(self, fits: List[float]) -> Dict:
         """Apply parallel-evaluated fitnesses, advance a generation, return metrics."""
         raise NotImplementedError
+
+    def set_validated_champion(self, payload) -> None:
+        """Adopt ``payload`` (a ``(kind, spec)`` from :meth:`population_payloads`) as the
+        best-known policy used by :meth:`best_act` and saved by the trainer. Called by the
+        trainer after a candidate wins on the held-out validation seed bank, so the saved
+        champion is a re-validated policy rather than a single-episode lucky outlier."""
+        raise NotImplementedError
+
+    def center_payload(self):
+        """An extra ``(kind, spec)`` policy to also put through held-out validation (e.g. the
+        search distribution's centre for ES/CMA-ES). ``None`` if there is no such candidate."""
+        return None
 
 
 # ---------------------------------------------------------------------------

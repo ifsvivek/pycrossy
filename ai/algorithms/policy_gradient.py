@@ -28,9 +28,12 @@ class _PolicyGradient(Algorithm):
         self.vf_coef = c.get("vf_coef", 0.5)
         self.ent_coef = c.get("ent_coef", 0.01)
         self.lr = c.get("lr", 3e-4)
-        self.rollout_size = int(c.get("rollout_size", 1024))
+        # Smaller rollout than the original 1024 → several× more policy updates for the same
+        # number of (short) episodes, which on-policy methods need to learn at all here.
+        self.rollout_size = int(c.get("rollout_size", 512))
         self.epochs = int(c.get("epochs", 4 if self.ppo else 1))
-        self.minibatch = int(c.get("minibatch", 256))
+        self.minibatch = int(c.get("minibatch", 128))
+        self.hidden = hidden
         self.net = ActorCritic(obs_size, num_actions, hidden=hidden, lr=self.lr, seed=seed)
 
         self._buf: List[dict] = []
@@ -103,10 +106,14 @@ class _PolicyGradient(Algorithm):
         return {**self.last_metrics, "buffer": len(self._buf), "lr": self.lr}
 
     def state_dict(self) -> Dict:
-        return {"params": pickle.dumps(self.net.get_params()),
+        return {"params": pickle.dumps(self.net.get_params()), "hidden": tuple(self.hidden),
                 "episodes": self.total_episodes, "steps": self.total_steps}
 
     def load_state_dict(self, state: Dict) -> None:
+        hidden = tuple(state.get("hidden", self.hidden))
+        if hidden != tuple(self.hidden):                 # rebuild to the saved architecture
+            self.hidden = hidden
+            self.net = ActorCritic(self.obs_size, self.num_actions, hidden=hidden, lr=self.lr)
         self.net.set_params(pickle.loads(state["params"]))
         self.total_episodes = state.get("episodes", 0)
         self.total_steps = state.get("steps", 0)

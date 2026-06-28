@@ -211,9 +211,11 @@ def _build_specs() -> List[Spec]:
     s += [
         Spec("ai_algorithm", "Algorithm", CHOICE, AI, default="neat",
              choices=(("neat", "NEAT"), ("ppo", "PPO"), ("a2c", "A2C"), ("dqn", "DQN"),
-                      ("es", "Evolution Strategies"), ("ga", "Genetic Algorithm"),
-                      ("cmaes", "CMA-ES")),
-             tooltip="Which learning algorithm to train / auto-play with."),
+                      ("ddqn", "Double DQN"), ("es", "Evolution Strategies"),
+                      ("ga", "Genetic Algorithm"), ("cmaes", "CMA-ES"),
+                      ("minimax", "Minimax (search)")),
+             tooltip="Which AI to train / auto-play with. Minimax plans live (no training); "
+                     "the others learn. Double DQN is a full DDQN with prioritized replay."),
         Spec("ai_speed", "Training / Play Speed", SLIDER, AI, default=3,
              lo=1, hi=10, step=1, unit="x",
              tooltip="Real-time multiplier for the watched AI window."),
@@ -228,6 +230,10 @@ def _build_specs() -> List[Spec]:
              lo=2, hi=32, step=1,
              tooltip="How many chickens run at once in AI Swarm — each on its own policy, "
                      "with the camera following the leader."),
+        Spec("ai_minimax_depth", "Minimax Search Depth", SLIDER, AI, default=6,
+             lo=2, hi=8, step=1,
+             tooltip="How many moves ahead the Minimax planner searches. Higher = smarter "
+                     "(depth 4 ≈ score 28, depth 6 ≈ 44) but slower per decision."),
     ]
 
     # ---- Developer -------------------------------------------------------

@@ -130,7 +130,14 @@ class NEAT(Algorithm):
         self.c1 = c.get("c1", 1.0)
         self.c2 = c.get("c2", 1.0)
         self.c3 = c.get("c3", 0.4)
+        # Adapt the compatibility threshold toward a target species count each generation, so
+        # the population splits into protected niches instead of collapsing to ONE species
+        # (the original fixed 3.0 never adapted). Start near 3.0 and let it fall toward the
+        # target — starting too low instead explodes to one-species-per-genome. See AI_AUDIT.
         self.compat_threshold = c.get("compat_threshold", 3.0)
+        self.target_species = int(c.get("target_species", 10))
+        self.compat_adjust = c.get("compat_adjust", 0.3)
+        self.compat_min = c.get("compat_min", 0.3)
         self.weight_mut_rate = c.get("weight_mut_rate", 0.8)
         self.weight_perturb = c.get("weight_perturb", 0.5)
         self.add_conn_rate = c.get("add_conn_rate", 0.1)
@@ -260,7 +267,7 @@ class NEAT(Algorithm):
         self.mean_fitness = float(np.mean([g.fitness for g in self.population]))
         self._speciate()
 
-        # Fitness sharing: adjusted fitness = fitness / species size.
+        # Fitness sharing (rebase to positive): adjusted fitness = (fitness+offset)/species size.
         offset = min(g.fitness for g in self.population)
         offset = -offset + 1.0 if offset <= 0 else 0.0
         species_adj = []
@@ -270,18 +277,26 @@ class NEAT(Algorithm):
             species_adj.append(sum(g.adj_fitness for g in sp))
         total_adj = sum(species_adj) or 1.0
 
+        # Largest-remainder offspring allocation: each species keeps one elite, then the
+        # remaining slots are apportioned by adjusted-fitness share with the leftover going to
+        # the largest fractional remainders. The original int(round(share*pop)) rounded any
+        # minority species (<~0.8% share) straight to ZERO offspring, so the population kept
+        # collapsing back to one dominant species.
+        ns = len(self.species)
+        breed_total = max(0, self.pop_size - ns)              # ns elite slots reserved
+        raw = [species_adj[k] / total_adj * breed_total for k in range(ns)]
+        alloc = [int(math.floor(r)) for r in raw]
+        rem = breed_total - sum(alloc)
+        for k in sorted(range(ns), key=lambda i: raw[i] - alloc[i], reverse=True)[:rem]:
+            alloc[k] += 1
+
         new_pop: List[Genome] = []
         for k, sp in enumerate(self.species):
             sp.sort(key=lambda g: g.fitness, reverse=True)
-            n_offspring = int(round(species_adj[k] / total_adj * self.pop_size))
-            if n_offspring <= 0:
-                continue
-            # Elitism: keep the best of each species.
-            if len(sp) > 0 and self.elitism > 0:
+            if self.elitism > 0:                              # elitism ALWAYS runs now
                 new_pop.append(sp[0].clone())
-                n_offspring -= 1
             survivors = sp[:max(1, int(math.ceil(len(sp) * self.survival)))]
-            for _ in range(max(0, n_offspring)):
+            for _ in range(alloc[k]):
                 if len(survivors) == 1 or self.rng.random() < 0.25:
                     child = self.rng.choice(survivors).clone()
                 else:
@@ -296,6 +311,12 @@ class NEAT(Algorithm):
             child = self.rng.choice(self.population).clone()
             self._mutate(child); child._rebuild_index(); new_pop.append(child)
         self.population = new_pop[:self.pop_size]
+
+        # Adapt the compatibility threshold toward the target species count so niches persist.
+        if self.num_species > self.target_species:
+            self.compat_threshold += self.compat_adjust
+        elif self.num_species < self.target_species:
+            self.compat_threshold = max(self.compat_min, self.compat_threshold - self.compat_adjust)
         self.generation += 1
 
     def _crossover(self, a: Genome, b: Genome) -> Genome:
@@ -403,17 +424,26 @@ class NEAT(Algorithm):
         return [("neat", g) for g in self.population]
 
     def set_population_fitness(self, fits) -> Dict:
+        # ``fits`` are now Common-Random-Numbers means over a SHARED seed bank (see
+        # trainer.train_generation), so argmax is a meaningful comparison rather than the
+        # luckiest-map lottery it used to be. The trainer owns the saved champion via
+        # held-out validation (set_validated_champion); here we only track the best averaged
+        # TRAINING fitness for the live metric and pick a showcase candidate.
         fits = [float(f) for f in fits]
         for g, f in zip(self.population, fits):
             g.fitness = f
         bi = int(np.argmax(fits))
-        if fits[bi] > self.best_fitness:
-            self.best_fitness = fits[bi]
-            self.best_genome = self.population[bi].clone()
+        self.best_fitness = max(self.best_fitness, fits[bi])
         self.total_episodes += len(fits)
         self._cur = self.population[bi]
         self._reproduce()
         return self._metrics(advancing=True)
+
+    def set_validated_champion(self, payload) -> None:
+        _kind, genome = payload
+        g = genome.clone()
+        g._rebuild_index()
+        self.best_genome = g
 
     @property
     def progress(self) -> Dict:

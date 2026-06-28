@@ -92,12 +92,13 @@ class _Evolution(Algorithm):
                 for p in self.population]
 
     def set_population_fitness(self, fits) -> Dict:
+        # ``fits`` are Common-Random-Numbers means over a SHARED seed bank, so the optimiser
+        # update and the metric are over comparable maps. The saved champion is chosen by the
+        # trainer's held-out validation (set_validated_champion), not this noisy argmax.
         fits = np.asarray(fits, dtype=np.float64)
         bi = int(np.argmax(fits))
         self._cur_fitness = float(fits[bi])
-        if fits[bi] > self.best_fitness:
-            self.best_fitness = float(fits[bi])
-            self.best_params = self.population[bi].copy()
+        self.best_fitness = max(self.best_fitness, float(fits[bi]))
         self.total_episodes += len(fits)
         self.mean_fitness = float(np.mean(fits))
         self._diversity = float(np.std(fits))
@@ -105,6 +106,15 @@ class _Evolution(Algorithm):
         self.population = self._ask()
         self.generation += 1
         return self._metrics(advanced=True)
+
+    def set_validated_champion(self, payload) -> None:
+        _kind, spec = payload
+        self.best_params = np.asarray(spec[0], dtype=np.float32).copy()
+
+    def center_payload(self):
+        """The search distribution's centre (ES θ / CMA mean) — usually the best low-variance
+        policy — offered to the trainer's validation alongside the sampled candidates."""
+        return None
 
     @property
     def progress(self) -> Dict:
@@ -114,9 +124,16 @@ class _Evolution(Algorithm):
     def state_dict(self) -> Dict:
         return {"best_params": pickle.dumps(self.best_params),
                 "generation": self.generation, "best_fitness": self.best_fitness,
+                "sizes": tuple(self.policy.sizes), "activation": self.policy.activation,
                 "extra": pickle.dumps(self._extra_state())}
 
     def load_state_dict(self, state: Dict) -> None:
+        # Rebuild the policy net to the SAVED architecture first, so a champion trained with a
+        # non-default hidden size (e.g. CMA-ES's (16,), or an HPO trial) reloads correctly.
+        sizes = state.get("sizes")
+        if sizes is not None and tuple(sizes) != tuple(self.policy.sizes):
+            self.policy = MLP(list(sizes), activation=state.get("activation", "tanh"))
+            self.dim = self.policy.num_params
         self.best_params = pickle.loads(state["best_params"])
         self.generation = state["generation"]
         self.best_fitness = state["best_fitness"]
@@ -153,7 +170,16 @@ class ES(_Evolution):
     def _ask(self) -> List[np.ndarray]:
         if self._theta is None:
             self._theta = self.policy.get_params().astype(np.float64)
-        self._eps = self.rng.standard_normal((self.pop_size, self.dim))
+        # Mirrored (antithetic) sampling: each +ε is paired with −ε. This cancels the linear
+        # part of the fitness landscape, roughly halving the gradient-estimate variance — and
+        # with Common Random Numbers each ±pair is scored on the same maps, so the comparison
+        # is clean (see AI_AUDIT §3.8).
+        half = self.pop_size // 2
+        base = self.rng.standard_normal((half, self.dim))
+        eps = np.concatenate([base, -base], axis=0)
+        if eps.shape[0] < self.pop_size:                    # odd population: one extra sample
+            eps = np.concatenate([eps, self.rng.standard_normal((1, self.dim))], axis=0)
+        self._eps = eps
         return [self._theta + self.sigma * e for e in self._eps]
 
     def _tell(self, fits: np.ndarray) -> None:
@@ -163,6 +189,12 @@ class ES(_Evolution):
         # Track the centre as a strong candidate for the champion view.
         if fits.max() > self.best_fitness:
             pass  # best_params already handled in end_episode
+
+    def center_payload(self):
+        if self._theta is None:
+            return None
+        return ("mlp", (self._theta.astype(np.float32), tuple(self.policy.sizes),
+                        self.policy.activation))
 
     def _extra_state(self) -> Dict:
         return {"theta": self._theta, "sigma": self.sigma}
@@ -217,8 +249,13 @@ class CMAES(_Evolution):
     """Separable (diagonal) CMA-ES — O(dim) covariance, scalable to the net's params."""
 
     def __init__(self, obs_size, num_actions, cfg=None, seed=0):
-        c = cfg or {}
-        self.sigma = c.get("sigma", 0.3)
+        c = dict(cfg or {})
+        # CMA-ES scales poorly with dimension, so default to a SMALLER policy net and a larger
+        # population than the shared defaults (the old 3909-dim net with pop 40 was badly
+        # under-resourced — see AI_AUDIT §3.8).
+        c.setdefault("hidden", (16,))
+        c.setdefault("pop_size", 64)
+        self.sigma = c.get("sigma", 0.5)
         self._cma_ready = False
         super().__init__(obs_size, num_actions, c, seed)
 
@@ -273,6 +310,12 @@ class CMAES(_Evolution):
                   + self.cmu * rank_mu)
         self.sigma *= np.exp((self.cs / self.damps) * (np.linalg.norm(self.ps) / self.chiN - 1))
         self.sigma = float(np.clip(self.sigma, 1e-8, 1e3))
+
+    def center_payload(self):
+        if not self._cma_ready:
+            return None
+        return ("mlp", (self.mean.astype(np.float32), tuple(self.policy.sizes),
+                        self.policy.activation))
 
     def _extra_state(self) -> Dict:
         return {"mean": self.mean, "C": self.C, "sigma": self.sigma,

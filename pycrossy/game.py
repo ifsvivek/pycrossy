@@ -431,7 +431,8 @@ class Game:
                 from ai.session import AISession
                 self.session = AISession(mode="replay" if action == "replay" else "auto",
                                          algo=payload.get("algo", "neat"),
-                                         seed=payload.get("seed", 0))
+                                         seed=payload.get("seed", 0),
+                                         algo_cfg={"max_depth": int(payload.get("depth", 6))})
         except Exception as exc:
             self.menu.notify(f"AI unavailable: {exc}")
             self.session = None
@@ -461,12 +462,15 @@ class Game:
         if not os.path.isfile(train_py):
             self.menu.notify("train.py not found next to the game")
             return
+        algo = str(payload.get("algo", "neat"))
         args = [sys.executable, train_py,
-                "--algo", str(payload.get("algo", "neat")),
+                "--algo", algo,
                 "--speed", str(payload.get("speed", 3)),
                 "--seed", str(payload.get("seed", 0))]
         if int(payload.get("parallel", 0)) > 0:
             args += ["--parallel", str(int(payload["parallel"]))]
+        if algo == "minimax":                       # planner: thread the in-game search depth
+            args += ["--set", f"max_depth={int(payload.get('depth', 6))}"]
         try:
             subprocess.Popen(args, cwd=project_root, env=dict(os.environ))
             self.menu.notify(f"Launched {payload.get('algo', 'neat').upper()} training "

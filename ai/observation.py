@@ -1,12 +1,18 @@
 """Observation builder.
 
 Turns the live engine state into a fixed-length float vector covering everything an
-agent needs: player position/state, the upcoming lanes' types, where the safe landing
-columns are, and the nearest hazards (cars/trains/logs) with their velocities — plus
-scalar context (score, elapsed time, camera offset).
+agent needs to plan: player position/state, the upcoming lanes' types, where the safe
+landing columns are *at the moment the agent would arrive there* (not just right now),
+the nearest hazards with velocity, the railroad warning-light state, and scalar context
+(score, time, camera, riding drift, distance-to-edge).
 
-The layout is deterministic and documented so any algorithm (NEAT → deep RL) consumes
-the same vector. ``OBS_SIZE`` is the total length.
+The key design choice (see docs/AI_AUDIT.md §3.4) is **arrival-time prediction**: a hop
+settles ~12 ticks after the decision, during which cars/logs/trains move. Column safety is
+therefore computed by projecting every mover forward over the hop dwell window and testing
+occupancy, so the agent can reason about whether a gap will *still be there* when it lands.
+
+The layout is deterministic and documented so any algorithm (NEAT → deep RL) consumes the
+same vector. ``OBS_SIZE`` is the total length.
 """
 from __future__ import annotations
 
@@ -14,23 +20,55 @@ from typing import List
 
 import numpy as np
 
+from pycrossy import config
+from pycrossy.entities.rows import OFFSET, TRAIN_OFFSET
+
 # Lane offsets relative to the player's current row (−1 behind .. +8 ahead).
 LANE_OFFSETS: List[int] = [-1, 0, 1, 2, 3, 4, 5, 6, 7, 8]
 _LANDING_COLS = (-1, 0, 1)          # reachable landing columns (left / stay / right)
-_DIST_NORM = 12.0                   # normalise hazard distances (wrap happens at 11)
+_DIST_NORM = 12.0                   # normalise hazard distances (car/log wrap at 11)
 _TYPE_INDEX = {"grass": 0, "road": 1, "water": 2, "railRoad": 3}
 
-# Per-lane: 4 (type one-hot) + 3 (col safety) + 4 (nearest hazard L/R dist+speed) = 11
-_PER_LANE = 11
-_SCALARS = 6
+# Hop dwell window (ticks after a decision) over which we test arrival-time safety. A hop
+# settles in ~12 ticks; the agent then re-decides, so a cell must stay clear through ~landing.
+_CAR_WINDOW = (2, 8, 14, 20)
+_TRAIN_WINDOW = (2, 6, 10, 14, 18)
+_EDGE = config.EDGE_DEATH_X
+
+# Per-lane: 4 (type one-hot) + 3 (arrival col safety) + 4 (nearest hazard L/R dist+speed)
+#           + 2 (railroad warning light + ring progress) = 13
+_PER_LANE = 13
+_SCALARS = 8
 OBS_SIZE = _SCALARS + _PER_LANE * len(LANE_OFFSETS)
+
+
+def _project_x(x0: float, speed: float, t: int, wrap: float) -> float:
+    """Where a mover at ``x0`` moving at ``speed``/tick will be after ``t`` ticks (wrapped)."""
+    x = x0 + speed * t
+    if speed > 0 and x > wrap:
+        x -= 2 * wrap
+    elif speed < 0 and x < -wrap:
+        x += 2 * wrap
+    return x
+
+
+def _movers_clear(movers, col_x, window, wrap) -> bool:
+    """True iff no mover's collision box covers ``col_x`` now or at any projected tick."""
+    for m in movers:
+        x0 = m.mesh.position.x
+        cb = m.collision_box
+        for t in (0, *window):
+            x = _project_x(x0, m.speed, t, wrap)
+            if x - cb < col_x < x + cb:
+                return False
+    return True
 
 
 def _lane_hazards(row_type, entity, player_x):
     """Nearest moving hazard to the left and right of ``player_x`` in a lane.
 
     Returns (left_dist, left_speed, right_dist, right_speed) normalised. Works for cars,
-    trains and logs (logs are 'hazards' only in the sense of being moving objects to track).
+    trains and logs (logs are tracked as moving objects even though they are ridable).
     """
     movers = []
     if row_type == "road":
@@ -52,27 +90,32 @@ def _lane_hazards(row_type, entity, player_x):
     return left_d, left_s, right_d, right_s
 
 
-def _col_safety(row, entity, col_x) -> float:
-    """1 = safe to occupy ``col_x`` now, 0 = deadly, 0.5 = blocked (can't enter)."""
-    if row is None:
-        return 0.5
-    rtype = row["type"]
+def _arrival_safety(rtype, entity, col_x) -> float:
+    """Safety of occupying ``col_x`` on this row *when the agent arrives*.
+
+    1.0 = will be safe, 0.0 = deadly at/around arrival, 0.3 = blocked grass (hop-in-place),
+    0.5 = unknown. Roads/rails project hazards forward; water requires a ridable to be under
+    the column at arrival; grass checks the static obstacle map.
+    """
     if rtype == "grass":
+        if abs(col_x) >= _EDGE:
+            return 0.0
         return 0.3 if int(col_x) in entity.obstacle_map else 1.0
+    if rtype == "road":
+        return 1.0 if _movers_clear(entity.cars, col_x, _CAR_WINDOW, OFFSET) else 0.0
+    if rtype == "railRoad":
+        return 1.0 if _movers_clear([entity.train], col_x, _TRAIN_WINDOW, TRAIN_OFFSET) else 0.0
     if rtype == "water":
-        # Safe only if a log/lily pad currently covers this column.
+        # Safe only if a log/lily pad will cover this column at arrival (~12 ticks). Static
+        # lily pads (speed 0) just need current coverage; drifting logs are projected.
         for m in entity.entities:
+            x0 = m.mesh.position.x
             cb = m.collision_box
-            if m.mesh.position.x - cb < col_x < m.mesh.position.x + cb:
-                return 1.0
+            for t in (0, 8, 12, 16):
+                x = _project_x(x0, m.speed, t, OFFSET)
+                if x - cb < col_x < x + cb:
+                    return 1.0
         return 0.0
-    if rtype in ("road", "railRoad"):
-        movers = entity.cars if rtype == "road" else [entity.train]
-        for m in movers:
-            cb = m.collision_box
-            if m.mesh.position.x - cb < col_x < m.mesh.position.x + cb:
-                return 0.0
-        return 1.0
     return 0.5
 
 
@@ -89,23 +132,32 @@ def build(engine, max_z: int, elapsed: float) -> np.ndarray:
     obs[2] = 1.0 if hero.riding_on else 0.0
     obs[3] = min(max_z / 100.0, 1.0)
     obs[4] = min(elapsed / 60.0, 1.0)
-    obs[5] = np.clip(engine.world.position.x / 3.0, -1.0, 1.0)  # camera lateral offset
+    obs[5] = np.clip(engine.world.position.x / 3.0, -1.0, 1.0)        # camera lateral offset
+    # Riding drift velocity (a log carries the player in x; relevant for edge-death planning).
+    drift = hero.riding_on.speed if hero.riding_on else 0.0
+    obs[6] = float(np.clip(drift / 0.15, -1.0, 1.0))
+    # Headroom before lateral edge-death (1 = centred, 0 = at the killing edge).
+    obs[7] = float(np.clip((_EDGE - abs(px)) / _EDGE, 0.0, 1.0))
 
     i = _SCALARS
     for dz in LANE_OFFSETS:
         row = gm.get_row(pz + dz)
         if row is not None:
             entity = row["entity"]
-            ti = _TYPE_INDEX.get(row["type"])
+            rtype = row["type"]
+            ti = _TYPE_INDEX.get(rtype)
             if ti is not None:
                 obs[i + ti] = 1.0
             for j, cdx in enumerate(_LANDING_COLS):
-                obs[i + 4 + j] = _col_safety(row, entity, round(px) + cdx)
-            ld, ls, rd, rs = _lane_hazards(row["type"], entity, px)
+                obs[i + 4 + j] = _arrival_safety(rtype, entity, round(px) + cdx)
+            ld, ls, rd, rs = _lane_hazards(rtype, entity, px)
             obs[i + 7] = ld
             obs[i + 8] = ls
             obs[i + 9] = rd
             obs[i + 10] = rs
+            if rtype == "railRoad":
+                obs[i + 11] = 1.0 if getattr(entity, "light_ringing", False) else 0.0
+                obs[i + 12] = float(getattr(entity, "ring_count", 0)) / 15.0
         else:
             # Unknown/ungenerated lane: neutral safety.
             obs[i + 4:i + 7] = 0.5

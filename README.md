@@ -135,17 +135,30 @@ The high score, selected character and lifetime statistics persist to `~/.pycros
 
 ```bash
 python train.py --list                         # neat, ppo, a2c, dqn, es, ga, cmaes
-python train.py --algo ppo                      # live dual-window training
-python train.py --algo dqn --headless           # fast, no windows
-python train.py --algo es  --headless --parallel 8   # evaluate the population on 8 cores
-python train.py --algo neat --parallel 16            # live + 16 parallel workers
-python train.py --algo neat --resume runs/neat       # resume from a checkpoint
-python train.py --algo a2c --episodes 5000 --no-tensorboard
+python train.py --algo neat --headless          # fast headless training (recommended)
+python train.py --algo dqn  --headless          # gradient algos: ALWAYS prefer headless
+python train.py --algo cmaes --headless --set sigma=0.6 --set pop_size=96   # tune hyperparams
+python train.py --algo neat --headless --eval-episodes 4   # 4 shared seeds / candidate (CRN)
+python train.py --algo neat --resume runs/neat  # resume from a checkpoint
+
+# Evaluate a trained policy over many held-out seeds (mean/median/best/worst/std/success rate)
+python -m ai.evaluate runs/neat/best_model.pkl --episodes 200
+# Benchmark several algorithms under identical conditions (shared seeds, multi-seed CIs)
+python -m ai.benchmark --algos neat,cmaes,ppo,dqn --seeds 0,1,2 --episodes 6000
+python -m ai.benchmark --compare runs/neat runs/cmaes --episodes 200   # compare existing models
 ```
 
 Key flags: `--algo`, `--episodes`, `--logdir`, `--seed`, `--headless`, `--no-dashboard`,
-`--parallel N`, `--speed` (live play speed × real-time), `--eval-every`, `--checkpoint-every`,
-`--resume`, `--no-tensorboard`.
+`--parallel N`, `--speed`, `--eval-every`, `--eval-episodes` (CRN seeds per candidate),
+`--checkpoint-every`, `--resume`, `--no-tensorboard`, `--set KEY=VAL` (repeatable
+hyperparameter override), `--config file.json`.
+
+> **Training quality (see [`docs/AI_AUDIT.md`](docs/AI_AUDIT.md)).** Population algorithms are
+> evaluated with **Common Random Numbers** — every candidate in a generation is scored on the
+> *same* rotating bank of seeds, so selection compares *policies*, not map luck. The saved
+> champion is chosen by **held-out validation** on a fixed disjoint seed bank, so `best_model.pkl`
+> is a re-validated policy rather than the single luckiest episode. Gradient algos (DQN/PPO/A2C)
+> must run `--headless`: the live render loop paces the sim to real time and starves training.
 
 **Parallel evaluation** (`--parallel N`, also Settings ▸ AI ▸ Parallel Environments) applies to
 the **population** algorithms (NEAT / ES / GA / CMA-ES). It works in **both** modes: headless
@@ -153,24 +166,33 @@ evaluates whole generations across N worker processes; **live** evaluates each g
 N workers in the background while the window showcases the current best genome (the HUD shows
 `xN workers`). PPO / A2C / DQN aren't population-based, so `--parallel` is a no-op for them.
 
-**State** (`OBS_SIZE = 116`): player x / motion / riding flags, score & time, camera offset,
-and for the next 10 lanes — type one-hot, safe landing columns, and nearest-hazard
-distance/velocity left & right. **Actions**: `UP, DOWN, LEFT, RIGHT, WAIT`. **Reward**: `+1`
-per new row, `+0.05`/step survival; penalties for death (`-5`), backward (`-0.3`), idling
-and bumping. (See [`ai/observation.py`](ai/observation.py), [`ai/env.py`](ai/env.py).)
+**State** (`OBS_SIZE = 138`): player x / motion / riding flags, riding-drift velocity,
+distance-to-edge, score & time, camera offset, and for the next 10 lanes — type one-hot,
+**arrival-time** column safety (hazards are projected forward over the hop so the agent reasons
+about whether a gap will still be there when it lands), nearest-hazard distance/velocity left
+& right, and the railroad warning-light state. **Actions**: `UP, DOWN, LEFT, RIGHT, WAIT`.
+**Reward**: `+1` per new (furthest) row minus a `-0.01`/step time cost (so progress strictly
+beats loitering), with penalties for death (`-1`), backward (`-0.3`) and bumping. (See
+[`ai/observation.py`](ai/observation.py), [`ai/env.py`](ai/env.py).)
 
 | Algorithm     | Family             | Notes                                                       |
 | ------------- | ------------------ | ----------------------------------------------------------- |
-| `neat`        | Neuroevolution     | Full NEAT from scratch (innovations, speciation, crossover) |
-| `ppo` / `a2c` | Policy gradient    | Shared numpy actor-critic + GAE                             |
-| `dqn`         | Value-based        | Replay buffer + target network + ε-greedy                   |
-| `es`          | Evolution strategy | OpenAI-style rank-normalised gradient                       |
+| `neat`        | Neuroevolution     | Full NEAT (innovations, **adaptive-threshold** speciation, crossover) |
+| `ppo` / `a2c` | Policy gradient    | Shared numpy actor-critic + GAE (corrected entropy bonus)   |
+| `dqn`         | Value-based        | Double DQN + replay + target net + Huber/clipped TD         |
+| `ddqn`        | Value-based        | **Production Double DQN** — dueling + prioritized replay + n-step + obs-norm (modular) |
+| `minimax`     | Planning (search)  | **Expectimax** forward-model planner — no training, plans live; *strongest agent* |
+| `es`          | Evolution strategy | OpenAI-style rank gradient with **mirrored** sampling       |
 | `ga`          | Genetic algorithm  | Elitism + tournament + uniform crossover                    |
-| `cmaes`       | CMA-ES             | Separable (diagonal) — scales to the net's parameters       |
+| `cmaes`       | CMA-ES             | Separable (diagonal); validates the distribution **centre** |
+
+See [`docs/AI_NEW_AGENTS.md`](docs/AI_NEW_AGENTS.md) for the Minimax planner and DDQN designs,
+heuristics, configuration flags, and benchmark results.
 
 Each run writes to `runs/<algo>/`: `metrics.csv`, `summary.json`, TensorBoard events
-(`tensorboard --logdir runs`), `checkpoint.pkl` (resume), `best_model.pkl` (autosaved on
-eval improvement), and `best_replay.json` (a deterministic replay of the best episode).
+(`tensorboard --logdir runs`), `checkpoint.pkl` (resume), `best_model.pkl` (saved on **validated**
+eval improvement), `best_history.jsonl` (every champion improvement) and `best_replay.json`
+(a deterministic replay of the best episode); `runs/index.json` is a cross-run model registry.
 
 Add a new algorithm by dropping a `@register("name")` `Algorithm` subclass into
 `ai/algorithms/` — no game or trainer changes needed.

@@ -38,6 +38,8 @@ class MetricsLogger:
         self.json_path = os.path.join(logdir, "summary.json")
         self._csv_file = open(self.csv_path, "w", newline="")
         self._csv_writer: Optional[csv.DictWriter] = None
+        self._csv_fields: list = []      # ordered union of all columns seen so far
+        self._csv_rows: list = []        # buffered rows, so the header can be rebuilt on new keys
 
         self.tb = SummaryWriter(logdir) if (use_tensorboard and _HAVE_TB) else None
 
@@ -103,12 +105,21 @@ class MetricsLogger:
         return row
 
     def _write_csv(self, row: Dict) -> None:
-        if self._csv_writer is None:
-            self._csv_writer = csv.DictWriter(self._csv_file, fieldnames=list(row.keys()))
+        self._csv_rows.append(row)
+        new_keys = [k for k in row if k not in self._csv_fields]
+        if new_keys:
+            # A column appeared that the frozen header lacks (e.g. eval_score, which is only
+            # present on evaluation episodes). Extend the schema and rewrite the whole file so
+            # late-appearing columns are never silently dropped.
+            self._csv_fields.extend(new_keys)
+            self._csv_file.seek(0)
+            self._csv_file.truncate()
+            self._csv_writer = csv.DictWriter(self._csv_file, fieldnames=self._csv_fields)
             self._csv_writer.writeheader()
-        # Extend header if new keys appear by rewriting is overkill; just fill known fields.
-        safe = {k: row.get(k, "") for k in self._csv_writer.fieldnames}
-        self._csv_writer.writerow(safe)
+            for r in self._csv_rows:
+                self._csv_writer.writerow({k: r.get(k, "") for k in self._csv_fields})
+        else:
+            self._csv_writer.writerow({k: row.get(k, "") for k in self._csv_fields})
         self._csv_file.flush()
 
     # -- derived stats -----------------------------------------------------

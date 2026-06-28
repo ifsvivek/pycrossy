@@ -28,9 +28,10 @@ _DIR = {Action.UP: Direction.UP, Action.DOWN: Direction.DOWN,
 
 class AISession:
     def __init__(self, mode: str = "auto", algo: str = "neat", seed: int = 0,
-                 wait_ticks: int = 8):
+                 wait_ticks: int = 8, algo_cfg: Optional[dict] = None):
         self.mode = mode                      # 'auto' | 'replay'
         self.algo_name = algo
+        self.algo_cfg = dict(algo_cfg or {})  # hyperparameters for planning agents (e.g. minimax depth)
         self.seed = int(seed)
         self.wait_ticks = wait_ticks
         self.env = CrossyEnv(seed=self.seed)
@@ -56,11 +57,30 @@ class AISession:
             self._load_policy()
 
     def _load_policy(self) -> None:
+        # Planning agents (e.g. minimax) act on the LIVE engine and need no checkpoint — build
+        # one (with the in-game search depth) and bind this session's engine so it plays now.
+        try:
+            from . import algorithms  # noqa: F401 — populate the registry
+            from .base import _REGISTRY, make
+            from .env import NUM_ACTIONS, OBS_SIZE
+            cls = _REGISTRY.get(self.algo_name.lower())
+            if cls is not None and getattr(cls, "uses_planning", False):
+                planner = make(self.algo_name, OBS_SIZE, NUM_ACTIONS, self.algo_cfg)
+                planner.bind_env(self.env)
+                self.policy = planner
+                self.label = f"{self.algo_name.upper()} PLANNER"
+                self.source = "live-search"
+                return
+        except Exception:                                  # pragma: no cover - unknown name etc.
+            pass
+
         path = os.path.join("runs", self.algo_name, "best_model.pkl")
         if os.path.exists(path):
             try:
                 from .trainer import Trainer
                 self.policy = Trainer.load_policy(path)
+                if getattr(self.policy, "uses_planning", False):
+                    self.policy.bind_env(self.env)
                 self.label = f"{self.algo_name.upper()} TRAINED"
                 self.source = path
                 return

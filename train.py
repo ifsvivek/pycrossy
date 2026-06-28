@@ -41,15 +41,54 @@ def parse_args(argv=None):
     p.add_argument("--resume", default=None, help="checkpoint dir/file to resume from")
     p.add_argument("--list", action="store_true", help="list algorithms and exit")
     p.add_argument("--no-tensorboard", action="store_true")
+    p.add_argument("--eval-episodes", type=int, default=5,
+                   help="episodes per candidate for CRN averaging / per eval")
+    p.add_argument("--set", dest="overrides", action="append", default=[], metavar="KEY=VAL",
+                   help="override an algorithm hyperparameter (repeatable), e.g. --set pop_size=100")
+    p.add_argument("--config", default=None, help="JSON file of algorithm hyperparameters")
     return p.parse_args(argv)
+
+
+def _coerce(v: str):
+    """Coerce a CLI string to int → float → bool → tuple → str."""
+    low = v.lower()
+    if low in ("true", "false"):
+        return low == "true"
+    if low in ("none", "null"):
+        return None
+    for cast in (int, float):
+        try:
+            return cast(v)
+        except ValueError:
+            pass
+    if "," in v:                                  # e.g. hidden=64,64
+        return tuple(_coerce(x) for x in v.split(","))
+    return v
+
+
+def build_algo_cfg(args) -> dict:
+    """Assemble ``algo_cfg`` from an optional --config JSON file and repeated --set overrides."""
+    import json
+    cfg: dict = {}
+    if args.config:
+        with open(args.config) as fh:
+            cfg.update(json.load(fh))
+    for item in args.overrides:
+        if "=" not in item:
+            raise SystemExit(f"--set expects KEY=VAL, got {item!r}")
+        k, v = item.split("=", 1)
+        cfg[k.strip()] = _coerce(v.strip())
+    return cfg
 
 
 def build_trainer(args) -> Trainer:
     logdir = args.logdir or os.path.join("runs", args.algo)
     cfg = TrainConfig(algo=args.algo, logdir=logdir, seed=args.seed,
                       target_episodes=args.episodes, eval_every=args.eval_every,
+                      eval_episodes=args.eval_episodes,
                       checkpoint_every=args.checkpoint_every,
-                      use_tensorboard=not args.no_tensorboard)
+                      use_tensorboard=not args.no_tensorboard,
+                      algo_cfg=build_algo_cfg(args))
     trainer = Trainer(cfg)
     if args.resume:
         path = args.resume if os.path.isfile(args.resume) else os.path.join(args.resume, "checkpoint.pkl")
@@ -60,16 +99,23 @@ def build_trainer(args) -> Trainer:
 
 def run_headless(args) -> None:
     trainer = build_trainer(args)
-    if args.parallel and getattr(trainer.algo, "supports_parallel", False):
-        print(f"[headless|parallel x{args.parallel}] {args.algo} -> {trainer.cfg.logdir}")
+    is_pop = getattr(trainer.algo, "supports_parallel", False)
+    # Population algorithms (NEAT/ES/GA/CMA-ES) default to the parallel GENERATION path — it
+    # is the only path with Common Random Numbers + held-out validation (see trainer). Pass
+    # --parallel 1 to force the legacy sequential evaluator.
+    if is_pop and args.parallel != 1:
+        workers = args.parallel if args.parallel > 1 else max(1, (os.cpu_count() or 2) - 1)
+        print(f"[headless|parallel x{workers}] {args.algo} -> {trainer.cfg.logdir} "
+              f"(CRN K={trainer.cfg.eval_episodes}, validated champion)")
 
         def on_gen(metrics, snap):
-            print(f"gen {metrics.get('generation', 0):4d} | best {snap['best_score']:3d} | "
-                  f"best_fit {metrics.get('best_fitness', 0):7.2f} | "
-                  f"mean_fit {metrics.get('mean_fitness', 0):7.2f} | {snap['steps_per_sec']:.0f} steps/s")
+            print(f"gen {metrics.get('generation', 0):4d} | best_eval {trainer.best_eval:6.2f} | "
+                  f"peak {snap['best_score']:3d} | mean_fit {metrics.get('mean_fitness', 0):7.2f} | "
+                  f"species {int(metrics.get('species', 0)):2d} | {snap['steps_per_sec']:.0f} steps/s")
 
-        trainer.train_parallel(n_workers=args.parallel, on_generation=on_gen)
-        print(f"done. metrics in {trainer.cfg.logdir}")
+        trainer.train_parallel(n_workers=workers, on_generation=on_gen)
+        trainer.save_checkpoint()
+        print(f"done. best validated mean score = {trainer.best_eval:.2f}. metrics in {trainer.cfg.logdir}")
         return
     print(f"[headless] training {args.algo} for {args.episodes} episodes -> {trainer.cfg.logdir}")
     last = [0]
@@ -245,6 +291,19 @@ def main(argv=None) -> None:
     if args.algo.lower() not in algorithms.available():
         print(f"Unknown algorithm '{args.algo}'. Available: {', '.join(algorithms.available())}")
         sys.exit(1)
+
+    from ai.base import _REGISTRY
+    cls = _REGISTRY[args.algo.lower()]
+    if args.parallel and not getattr(cls, "supports_parallel", False):
+        print(f"note: --parallel only applies to population algorithms (NEAT/ES/GA/CMA-ES); "
+              f"ignored for '{args.algo}'.")
+    if getattr(cls, "uses_planning", False):
+        print(f"note: '{args.algo}' is a PLANNING agent — it searches each move live and does NOT\n"
+              f"      learn, so this only SHOWCASES it playing (training metrics won't improve;\n"
+              f"      to just watch it, use Auto-Play in the app). Tune strength vs speed with\n"
+              f"      --set max_depth=N (2-8, default 6); --parallel does not apply, and --speed\n"
+              f"      paces the sim but each move still costs its search time.")
+
     if args.headless:
         run_headless(args)
     else:

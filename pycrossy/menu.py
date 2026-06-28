@@ -331,6 +331,7 @@ class MenuSystem:
                 "parallel": int(self.cfg.get("ai_parallel")),
                 "seed": int(self.cfg.get("ai_seed")),
                 "swarm": int(self.cfg.get("ai_swarm_size")),
+                "depth": int(self.cfg.get("ai_minimax_depth")),
             }
             self.on_launch(action, payload)
 
