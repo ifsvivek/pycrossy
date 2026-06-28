@@ -19,6 +19,18 @@ import numpy as np
 from .env import CrossyEnv
 
 
+def _pool_context():
+    """Multiprocessing context for the worker pool, portable across OSes.
+
+    Prefer ``fork`` where available (Linux): it copies the already-loaded game modules, so
+    workers start instantly, and it avoids Python 3.14's default ``forkserver`` (slower start,
+    brittle once native GUI libs are imported). On platforms without ``fork`` (Windows, and the
+    safer default on macOS) fall back to ``spawn`` — workers only run numpy/env logic and all
+    payloads are picklable, so it works the same, just with slower process startup.
+    """
+    return mp.get_context("fork" if "fork" in mp.get_all_start_methods() else "spawn")
+
+
 def _make_policy(kind: str, payload) -> Callable[[np.ndarray], int]:
     if kind == "neat":
         genome = payload
@@ -77,7 +89,7 @@ def make_pool(n_workers: int | None = None, max_steps: int = 1500):
     if n_workers <= 1:
         _worker_init(max_steps)
         return None
-    ctx = mp.get_context("fork")
+    ctx = _pool_context()
     return ctx.Pool(processes=n_workers, initializer=_worker_init, initargs=(max_steps,))
 
 
@@ -97,9 +109,6 @@ def parallel_evaluate(payloads: List[Tuple[str, object]], seeds: List[int],
     if n_workers == 1:
         _worker_init(max_steps)
         return [_eval_one(t) for t in tasks]
-    # Use 'fork' explicitly: workers do only numpy/env logic (no GL/SDL), and Python 3.14's
-    # default 'forkserver' is both slower to start and brittle when the parent has imported
-    # native GUI libs. Fork copies the already-loaded game modules -> fast worker startup.
-    ctx = mp.get_context("fork")
+    ctx = _pool_context()      # 'fork' on Linux (fast), 'spawn' on Windows/macOS (see _pool_context)
     with ctx.Pool(processes=n_workers, initializer=_worker_init, initargs=(max_steps,)) as p:
         return p.map(_eval_one, tasks)
