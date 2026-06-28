@@ -147,7 +147,8 @@ class Renderer:
         self.brightness = 1.0
         self.ambient = self._base_ambient
         self.dir_intensity = self._base_dir
-        self.view_half_width = config.CAMERA_VIEW_HALF_WIDTH
+        self.view_half_width = config.CAMERA_VIEW_HALF_WIDTH       # zoom base (reference)
+        self.view_half_height = config.CAMERA_VIEW_HALF_HEIGHT     # invariant vertical extent
         self.shadows_enabled = True
         self.cull_enabled = True
 
@@ -219,6 +220,7 @@ class Renderer:
         """``factor`` > 1 frames tighter (zooms in); 1.0 is the reference framing."""
         factor = max(0.5, min(2.0, float(factor)))
         self.view_half_width = config.CAMERA_VIEW_HALF_WIDTH / factor
+        self.view_half_height = config.CAMERA_VIEW_HALF_HEIGHT / factor
 
     def _geom_gl(self, geom: Geometry) -> _MeshGL:
         gl = self._mesh_cache.get(id(geom))
@@ -249,9 +251,12 @@ class Renderer:
         view = np.identity(4, dtype=np.float64)
         view[:3, :3] = rot3
         view[:3, 3] = -rot3 @ np.asarray(config.CAMERA_POSITION, dtype=np.float64)
+        # Vertical extent is the invariant; widen horizontally with the window aspect ("Hor+")
+        # so wide/desktop windows reveal more scenery instead of letterboxing. At the portrait
+        # design aspect this reproduces the original half_w = 5.2 framing exactly.
         aspect = self.width / self.height
-        half_w = self.view_half_width
-        half_h = half_w / aspect
+        half_h = self.view_half_height
+        half_w = half_h * aspect
         proj = mu.ortho(-half_w, half_w, -half_h, half_h, config.CAMERA_NEAR, config.CAMERA_FAR)
         return view, proj
 

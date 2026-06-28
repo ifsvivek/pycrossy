@@ -2,7 +2,7 @@
 
 Opens a pygame OpenGL window on the dedicated GPU when available, drives the :class:`Engine`
 at a fixed 60 Hz logic step while rendering at up to the configured FPS, and presents the
-fixed-aspect 3D game letterboxed inside any window size.
+3D game inside any window size (Native fills the window; Mobile/Stretch letterbox a phone aspect).
 
 On top of the game it hosts the full front-end: a main menu, a tabbed settings system (with
 live-applied, persisted configuration), statistics, credits, and several launch modes —

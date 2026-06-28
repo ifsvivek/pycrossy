@@ -30,9 +30,11 @@ professional analytics dashboard.
   run well above 120 FPS.
 - **Dedicated-GPU aware** — auto-detects and requests the high-performance GPU (NVIDIA
   PRIME offload / EGL device selection), logs the device at startup, falls back gracefully.
-- **Fully responsive** — resolution-independent UI, letterboxed fixed-aspect gameplay, and
-  four display modes (Native / Mobile / Stretch / Dynamic) across windowed / borderless /
-  fullscreen — switchable at runtime, any aspect ratio (16:9 … 32:9, 4:3, portrait).
+- **Fully responsive** — resolution-independent UI and four display modes: **Native** fills the
+  whole window (the camera widens horizontally to match, so wide/desktop screens reveal more
+  scenery instead of black bars), **Mobile**/**Stretch** letterbox a fixed phone aspect, and
+  **Dynamic** auto-picks — across windowed / borderless / fullscreen, switchable at runtime,
+  any aspect ratio (16:9 … 32:9, 4:3, portrait).
 - **Full front-end** — a polished main menu with an adaptive **Desktop** (full-window, tabbed)
   and **Phone** (portrait) layout, a tabbed **Settings** system (Graphics / Audio / Gameplay /
   Controls / Performance / AI / Developer) with live-applied, persisted, corruption-safe

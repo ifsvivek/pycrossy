@@ -79,6 +79,11 @@ RAILROAD_TOP = 0.5
 # ---------------------------------------------------------------------------
 WINDOW_WIDTH = 480
 WINDOW_HEIGHT = 820                  # portrait, phone-like aspect
+# Camera vertical half-extent — the invariant framing. The horizontal half-extent is derived
+# each frame as ``half_height * window_aspect`` (Hor+), so wider/desktop windows reveal more
+# scenery left/right (over the wide ground slab) instead of letterboxing. Equals the portrait
+# design's half-height, so the portrait/phone framing is byte-for-byte unchanged.
+CAMERA_VIEW_HALF_HEIGHT = CAMERA_VIEW_HALF_WIDTH * WINDOW_HEIGHT / WINDOW_WIDTH
 TARGET_FPS = 120
 WINDOW_TITLE = "Crossy Road — PyCrossy"
 

@@ -72,8 +72,9 @@ renderer:
    off-screen parts for free via instancing.
 
 The camera is orthographic, oriented by a fixed `lookAt` and translated to the runtime
-position. Framing depends only on the FBO's fixed aspect — never on the window — so
-gameplay is identical at any resolution.
+position. The **vertical** framing is the invariant (the same rows are always visible at any
+resolution); the **horizontal** extent is derived as `half_height × aspect` ("Hor+"), so wide
+windows reveal more scenery left/right rather than letterboxing — never distortion.
 
 ## Game logic
 
@@ -87,12 +88,13 @@ timing is frame-rate independent.
 
 ## Display & responsiveness
 
-`layout.py` computes a fixed-aspect **gameplay rect** within any window for each
-`DisplayMode` (Native fills with a scene-coloured letterbox; Mobile centres a phone with a
-bezel; Stretch is aspect-preserving fill with black bars; Dynamic auto-picks by aspect).
-`WindowMode` toggles windowed / borderless / fullscreen at runtime (recreating the GL
-context). `ui.py` sizes every element from a single `scale` factor (rect height / reference),
-so the HUD and menus reposition and scale together — no hardcoded coordinates.
+`layout.py` computes the **gameplay rect** within any window for each `DisplayMode` (Native
+fills the whole window — the 3D camera widens its horizontal frustum to match the window aspect
+so there are no bars; Mobile centres a phone with a bezel; Stretch letterboxes a fixed phone
+aspect with black bars; Dynamic auto-picks by aspect). `WindowMode` toggles windowed /
+borderless / fullscreen at runtime (recreating the GL context). `ui.py` sizes every element from
+a single `scale` factor (rect height / reference), so the HUD and menus reposition and scale
+together — no hardcoded coordinates.
 
 ## GPU selection
 

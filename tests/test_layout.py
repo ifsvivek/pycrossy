@@ -12,15 +12,28 @@ RESOLUTIONS = [(1920, 1080), (1920, 1200), (2560, 1080), (3840, 1080),
 
 @pytest.mark.parametrize("w,h", RESOLUTIONS)
 @pytest.mark.parametrize("mode", list(DisplayMode))
-def test_rect_fits_and_preserves_aspect(w, h, mode):
+def test_rect_fits_within_window(w, h, mode):
     L = compute(w, h, mode)
     assert 0 < L.w <= w
     assert 0 < L.h <= h
     assert L.x >= 0 and L.y >= 0
     assert L.x + L.w <= w and L.y + L.h <= h
-    # The gameplay rect always keeps the game's aspect ratio (no stretching).
-    assert abs((L.w / L.h) - GAME_ASPECT) < 0.02
     assert L.scale > 0
+
+
+@pytest.mark.parametrize("w,h", RESOLUTIONS)
+@pytest.mark.parametrize("mode", [DisplayMode.MOBILE, DisplayMode.STRETCH])
+def test_fixed_aspect_modes_preserve_aspect(w, h, mode):
+    # Mobile/Stretch keep the game's portrait aspect (letterboxed); the camera is unchanged.
+    L = compute(w, h, mode)
+    assert abs((L.w / L.h) - GAME_ASPECT) < 0.02
+
+
+@pytest.mark.parametrize("w,h", RESOLUTIONS)
+def test_native_fills_the_window(w, h):
+    # Native fills the whole window (no letterbox); the 3D camera widens horizontally to match.
+    L = compute(w, h, DisplayMode.NATIVE)
+    assert (L.x, L.y, L.w, L.h) == (0, 0, w, h)
 
 
 def test_native_uses_scene_background_and_no_bezel():

@@ -15,7 +15,7 @@ from . import config
 
 
 class DisplayMode(str, Enum):
-    NATIVE = "native"       # fit the game to the window, scene-coloured letterbox
+    NATIVE = "native"       # fill the whole window; the camera widens horizontally to match
     MOBILE = "mobile"       # phone aspect, centred, dark background + device bezel
     STRETCH = "stretch"     # aspect-preserving fill, black letterbox bars
     DYNAMIC = "dynamic"     # auto-pick based on the window's aspect ratio
@@ -85,8 +85,10 @@ def compute(win_w: int, win_h: int, mode: DisplayMode,
     elif mode == DisplayMode.STRETCH:
         x, y, w, h = _contain(win_w, win_h, aspect, fill=1.0)
         bg, bezel = _BLACK_BG, False
-    else:  # NATIVE
-        x, y, w, h = _contain(win_w, win_h, aspect, fill=1.0)
+    else:  # NATIVE — fill the whole window. The 3D camera widens its horizontal frustum to
+        # the window aspect (Hor+), so there are no letterbox bars; wide/desktop windows simply
+        # reveal more scenery (the ground slab backs the edges), portrait windows are unchanged.
+        x, y, w, h = 0, 0, win_w, win_h
         bg, bezel = _SCENE_BG, False
 
     return Layout(x, y, w, h, bg, bezel, scale=h / REFERENCE_HEIGHT)

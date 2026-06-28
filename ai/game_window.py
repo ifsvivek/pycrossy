@@ -1,8 +1,8 @@
 """Live play window — renders the env scene while the AI plays, with a small HUD.
 
 Runs in the trainer's process (the dashboard is a separate process). Uses the dedicated
-GPU when available and presents the fixed-aspect game letterboxed inside a resizable /
-fullscreen window, so it scales to any resolution without distortion.
+GPU when available and presents the game filling a resizable / fullscreen window (the camera
+widens horizontally to the window aspect), so it scales to any resolution without distortion.
 """
 from __future__ import annotations
 
