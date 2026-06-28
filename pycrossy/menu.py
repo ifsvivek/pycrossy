@@ -813,11 +813,13 @@ class MenuSystem:
         self._header("Credits", pygame.Rect(area.x, area.y, area.w, t.px(40)))
         lines = [
             ("PyCrossy", "A GPU-rendered arcade hopper in Python.", t.accent_soft),
-            ("Assets", "Art, audio & fonts © Evan Bacon, MIT.", t.text),
-            ("", "See assets/ATTRIBUTION.md for full credits,", t.text_dim),
-            ("", "with thanks to their authors.", t.text_dim),
-            ("Engine", "pygame-ce · moderngl · OpenGL · NumPy", t.text),
-            ("AI framework", "NEAT · PPO · A2C · DQN · ES · GA · CMA-ES (pure NumPy)", t.text),
+            ("Created by", "Vivek Sharma", t.text),
+            ("", "Full-Stack Developer", t.text_dim),
+            ("Web", "ifsvivek.in", t.text),
+            ("GitHub", "github.com/ifsvivek", t.text_dim),
+            ("X", "@ifsvivek", t.text_dim),
+            ("Built with", "pygame-ce · moderngl · OpenGL · NumPy", t.text),
+            ("AI", "NEAT · PPO · A2C · DQN · DDQN · ES · GA · CMA-ES · Minimax", t.text),
         ]
         y = area.y + t.px(64)
         slide = self._slide()
