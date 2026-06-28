@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pycrossy"
+version = "1.0.0"
+description = "A GPU-accelerated endless arcade hopper in Python with a reinforcement-learning framework"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "PyCrossy contributors" }]
+keywords = ["game", "crossy-road", "reinforcement-learning", "neat", "ppo", "moderngl", "pygame"]
+
+dependencies = [
+    "pygame-ce>=2.5.0",
+    "numpy>=1.24",
+    "moderngl>=5.10",
+    "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+metrics = ["matplotlib>=3.7", "tensorboardX>=2.6"]
+dev = ["pytest>=7.0", "pyflakes>=3.0"]
+
+[project.scripts]
+pycrossy = "pycrossy.game:main"
+pycrossy-train = "train:main"
+
+[tool.setuptools]
+packages = ["pycrossy", "pycrossy.entities", "ai", "ai.algorithms"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]

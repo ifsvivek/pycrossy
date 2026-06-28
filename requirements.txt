@@ -1,0 +1,16 @@
+# PyCrossy — runtime dependencies (Python 3.11+; developed on 3.14)
+pygame-ce>=2.5.0
+numpy>=1.24
+moderngl>=5.10
+Pillow>=10.0
+
+# AI / training (numpy-based core; torch only needed for PPO/A2C/DQN if used)
+# torch is optional — the gradient-based algorithms fall back to numpy implementations.
+# Install with:  pip install torch   for the fastest deep-RL path.
+
+# Dashboard / metrics (optional but recommended)
+matplotlib>=3.7
+tensorboardX>=2.6     # optional — enables TensorBoard logging without torch
+
+# Testing
+pytest>=7.0
